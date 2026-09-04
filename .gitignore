@@ -4,3 +4,7 @@ __pycache__/
 build/
 .venv/
 *.npy
+build/
+__pycache__/
+.pytest_cache/
+*.pyc
