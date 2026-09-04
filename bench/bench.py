@@ -127,7 +127,7 @@ def main() -> int:
     weights.fill(0x38)  # finite e4m3 +1; values do not change the instruction path
     scales = np.full((rows // 128, k_blocks), 127, dtype=np.uint8)
     x = np.linspace(0.25, 1.0, args.k, dtype=np.float32)
-    output = np.empty(rows, dtype=np.float32)
+    output = np.full(rows, np.nan, dtype=np.float32)
     bytes_per_pass = weights.nbytes + scales.nbytes
     llc_bytes = _cache_size_bytes(selected_cpus[0])
     if llc_bytes and bytes_per_pass <= llc_bytes:
@@ -138,10 +138,12 @@ def main() -> int:
 
     lib = _load_library()
     for _ in range(args.warmup):
+        output.fill(np.nan)
         _run(lib, weights, scales, x, output, threads)
 
     durations = []
     for _ in range(args.iterations):
+        output.fill(np.nan)
         start = time.perf_counter_ns()
         _run(lib, weights, scales, x, output, threads)
         durations.append((time.perf_counter_ns() - start) * 1e-9)

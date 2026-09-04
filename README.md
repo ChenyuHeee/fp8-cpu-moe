@@ -29,8 +29,11 @@ float64 ground truth; pytest is not required. It checks:
 
 - K = 128, 256, 2048, 4096, 5120, and 8192;
 - a genuinely ragged K = 5137 tail (5120 is exactly 40×128);
-- every one of the 254 finite e4m3fn encodings individually, including signed
-  zeros, subnormals, negative values, and ±448;
+- every one of the 254 finite e4m3fn encodings individually through both the
+  SIMD body and scalar tail, including signed zeros, subnormals, negative
+  values, and ±448;
+- mixed-sign full-range weights with zero-mean activations at every required K,
+  with maximum relative error below 1e-6 versus the float64 reference;
 - an all-zero 128-wide block and sharply different adjacent K- and N-block
   scales;
 - e4m3fn NaN propagation for codes `0x7f` and `0xff`;
@@ -49,8 +52,9 @@ fp32 bit pattern and adding the exponent-bias difference. The eight subnormal
 magnitudes come from a register-resident permutation table. Four independent
 accumulators expose memory-level parallelism. At the end of each 128-wide block,
 `VSCALEFPS` adjusts the four accumulator exponents by `s-127`, avoiding a scale
-multiply for every weight. A 1 KiB software-prefetch lead nudges the streaming
-weight loads.
+multiply for every weight. Cross-block adds use Kahan compensation and the
+final lane reduction is performed in fp64. A 1 KiB software-prefetch lead nudges
+the streaming weight loads.
 
 A persistent worker pool removes thread-creation cost from steady-state calls.
 Workers are pinned to the caller's allowed CPU set and divide work on complete
@@ -75,7 +79,7 @@ Numerical results from the acceptance suite:
 | implementation | measured maximum relative error vs float64 PyTorch |
 |---|---:|
 | scalar | 5.6303e-08 |
-| AVX-512F/BW | 1.4098e-07 |
+| AVX-512F/BW | 7.3957e-07 |
 
 Both pass the required `< 1e-6` criterion.
 
@@ -98,9 +102,9 @@ shape:           N=131072, K=8192
 working set:     1024.06 MiB
 detected LLC:    57.00 MiB
 samples:         31 after 5 warmups
-median latency:  10.327 ms
-median:          103.98 GB/s
-range:           72.50 .. 127.48 GB/s
+median latency:  9.560 ms
+median:          112.32 GB/s
+range:           77.60 .. 126.69 GB/s
 criterion:       PASS (>= 50.6 GB/s)
 ```
 
@@ -108,7 +112,7 @@ The reported byte rate counts the e4m3 weight bank plus its `ue8m0` scale bank;
 the activation vector is cache-resident and is not counted, consistent with an
 expert-weight streaming bandwidth metric. The 1024.06 MiB stream is 18 times the
 detected 57 MiB socket LLC. Timing includes worker wake-up, synchronization,
-dispatch, computation, and output stores. The measured **103.98 GB/s passes the
+dispatch, computation, and output stores. The measured **112.32 GB/s passes the
 50.6 GB/s throughput criterion**. The full observed range is included because
 the host was shared and sample-to-sample system load was visible.
 

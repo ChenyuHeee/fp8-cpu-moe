@@ -2,9 +2,8 @@ __pycache__/
 *.so
 *.o
 build/
+__pycache__/
 .venv/
 *.npy
-build/
-__pycache__/
 .pytest_cache/
 *.pyc

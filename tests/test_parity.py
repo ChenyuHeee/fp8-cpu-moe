@@ -77,21 +77,21 @@ def _max_relative(got: np.ndarray, reference: torch.Tensor) -> float:
     return float(((got64 - reference).abs() / reference.abs().clamp_min(1e-300)).max())
 
 
-def _case(n: int, k: int, seed: int):
+def _case(n: int, k: int, seed: int, mixed_sign: bool = True):
     rng = np.random.default_rng(seed)
-    # Positive values dominate so a strict relative metric remains meaningful;
-    # explicit negative extrema below still exercise the sign path.
-    positive_codes = FINITE_CODES[FINITE_CODES < 0x7F]
-    weights = rng.choice(positive_codes, size=(n, k)).astype(np.uint8)
-    special = np.array(
-        [0x00, 0x80, 0x01, 0x81, 0x07, 0x87, 0x08, 0x88,
-         0x38, 0xB8, 0x7E, 0xFE],
-        dtype=np.uint8,
-    )
-    weights.reshape(-1)[: len(special)] = special
+    if mixed_sign:
+        # Full-range signed weights and zero-mean activations expose
+        # cancellation error in narrow cross-block accumulators.
+        code_pool = FINITE_CODES
+    else:
+        code_pool = FINITE_CODES[FINITE_CODES < 0x7F]
+    weights = rng.choice(code_pool, size=(n, k)).astype(np.uint8)
     scale_shape = ((n + 127) // 128, (k + 127) // 128)
     scales = rng.integers(124, 131, size=scale_shape, dtype=np.uint8)
-    x = rng.uniform(0.03125, 1.0, size=k).astype(np.float32)
+    if mixed_sign:
+        x = rng.standard_normal(k).astype(np.float32)
+    else:
+        x = rng.uniform(0.03125, 1.0, size=k).astype(np.float32)
     return weights, scales, x
 
 
@@ -113,10 +113,15 @@ class ParityTests(unittest.TestCase):
                     self.assertLess(_max_relative(got, reference), 1e-6)
 
     def test_every_finite_code_decodes_individually(self):
-        weights = FINITE_CODES.reshape(-1, 1)
-        scales = np.full(((weights.shape[0] + 127) // 128, 1), 127,
+        # Pair one row per code for each execution path. K=257 ensures index 0
+        # is decoded in the SIMD loop while index 256 is handled by the scalar
+        # tail in the same row shape.
+        weights = np.zeros((FINITE_CODES.size * 2, 257), dtype=np.uint8)
+        weights[0::2, 0] = FINITE_CODES
+        weights[1::2, 256] = FINITE_CODES
+        scales = np.full(((weights.shape[0] + 127) // 128, 3), 127,
                          dtype=np.uint8)
-        x = np.ones(1, dtype=np.float32)
+        x = np.ones(257, dtype=np.float32)
         reference = _reference(weights, scales, x).to(torch.float32).numpy()
         for implementation in ("fp8_moe_gemv_scalar", "fp8_moe_gemv"):
             with self.subTest(implementation=implementation):
@@ -152,7 +157,7 @@ class ParityTests(unittest.TestCase):
                 self.assertLess(_max_relative(got, reference), 1e-6)
 
     def test_random_ragged_matrix_across_worker_partitions(self):
-        weights, scales, x = _case(385, 257, seed=881)
+        weights, scales, x = _case(385, 257, seed=881, mixed_sign=False)
         reference = _reference(weights, scales, x)
         for implementation in ("fp8_moe_gemv_scalar", "fp8_moe_gemv"):
             with self.subTest(implementation=implementation):

@@ -120,26 +120,30 @@ inline __m512 decode_e4m3fn_16(__m128i packed) {
 __attribute__((target("avx512f,avx512bw")))
 float gemv_row_avx512(const uint8_t* weights, const uint8_t* scales,
                       const float* x, int64_t k) {
-  __m512 total0 = _mm512_setzero_ps();
-  __m512 total1 = _mm512_setzero_ps();
-  __m512 total2 = _mm512_setzero_ps();
-  __m512 total3 = _mm512_setzero_ps();
-  float scalar_tail = 0.0f;
+  double total = 0.0;
+  const __m512i high_lanes = _mm512_setr_epi32(
+      8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7);
 
   const int64_t blocks = (k + kScaleBlock - 1) / kScaleBlock;
   for (int64_t block = 0; block < blocks; ++block) {
     const int64_t begin = block * kScaleBlock;
     const int64_t end = std::min(k, begin + kScaleBlock);
-    __m512 acc0 = _mm512_setzero_ps();
-    __m512 acc1 = _mm512_setzero_ps();
-    __m512 acc2 = _mm512_setzero_ps();
-    __m512 acc3 = _mm512_setzero_ps();
+    __m512d acc0_lo = _mm512_setzero_pd();
+    __m512d acc0_hi = _mm512_setzero_pd();
+    __m512d acc1_lo = _mm512_setzero_pd();
+    __m512d acc1_hi = _mm512_setzero_pd();
+    __m512d acc2_lo = _mm512_setzero_pd();
+    __m512d acc2_hi = _mm512_setzero_pd();
+    __m512d acc3_lo = _mm512_setzero_pd();
+    __m512d acc3_hi = _mm512_setzero_pd();
 
     int64_t i = begin;
     for (; i + 64 <= end; i += 64) {
-      _mm_prefetch(reinterpret_cast<const char*>(weights + i) +
-                       kPrefetchBytes,
-                   _MM_HINT_T0);
+      if (i == begin || (i - begin) % 1024 == 0) {
+        _mm_prefetch(reinterpret_cast<const char*>(weights + i) +
+                         kPrefetchBytes,
+                     _MM_HINT_T0);
+      }
       const __m512 w0 = decode_e4m3fn_16(_mm_loadu_si128(
           reinterpret_cast<const __m128i*>(weights + i)));
       const __m512 w1 = decode_e4m3fn_16(_mm_loadu_si128(
@@ -148,44 +152,90 @@ float gemv_row_avx512(const uint8_t* weights, const uint8_t* scales,
           reinterpret_cast<const __m128i*>(weights + i + 32)));
       const __m512 w3 = decode_e4m3fn_16(_mm_loadu_si128(
           reinterpret_cast<const __m128i*>(weights + i + 48)));
-      acc0 = _mm512_fmadd_ps(w0, _mm512_loadu_ps(x + i), acc0);
-      acc1 = _mm512_fmadd_ps(w1, _mm512_loadu_ps(x + i + 16), acc1);
-      acc2 = _mm512_fmadd_ps(w2, _mm512_loadu_ps(x + i + 32), acc2);
-      acc3 = _mm512_fmadd_ps(w3, _mm512_loadu_ps(x + i + 48), acc3);
+      const __m512 x0 = _mm512_loadu_ps(x + i);
+      const __m512 x1 = _mm512_loadu_ps(x + i + 16);
+      const __m512 x2 = _mm512_loadu_ps(x + i + 32);
+      const __m512 x3 = _mm512_loadu_ps(x + i + 48);
+      const __m512 w0_hi_ps = _mm512_permutexvar_ps(high_lanes, w0);
+      const __m512 w1_hi_ps = _mm512_permutexvar_ps(high_lanes, w1);
+      const __m512 w2_hi_ps = _mm512_permutexvar_ps(high_lanes, w2);
+      const __m512 w3_hi_ps = _mm512_permutexvar_ps(high_lanes, w3);
+      const __m512 x0_hi_ps = _mm512_permutexvar_ps(high_lanes, x0);
+      const __m512 x1_hi_ps = _mm512_permutexvar_ps(high_lanes, x1);
+      const __m512 x2_hi_ps = _mm512_permutexvar_ps(high_lanes, x2);
+      const __m512 x3_hi_ps = _mm512_permutexvar_ps(high_lanes, x3);
+      acc0_lo = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(w0)),
+                                _mm512_cvtps_pd(_mm512_castps512_ps256(x0)),
+                                acc0_lo);
+      acc0_hi = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(w0_hi_ps)),
+                                _mm512_cvtps_pd(_mm512_castps512_ps256(x0_hi_ps)),
+                                acc0_hi);
+      acc1_lo = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(w1)),
+                                _mm512_cvtps_pd(_mm512_castps512_ps256(x1)),
+                                acc1_lo);
+      acc1_hi = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(w1_hi_ps)),
+                                _mm512_cvtps_pd(_mm512_castps512_ps256(x1_hi_ps)),
+                                acc1_hi);
+      acc2_lo = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(w2)),
+                                _mm512_cvtps_pd(_mm512_castps512_ps256(x2)),
+                                acc2_lo);
+      acc2_hi = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(w2_hi_ps)),
+                                _mm512_cvtps_pd(_mm512_castps512_ps256(x2_hi_ps)),
+                                acc2_hi);
+      acc3_lo = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(w3)),
+                                _mm512_cvtps_pd(_mm512_castps512_ps256(x3)),
+                                acc3_lo);
+      acc3_hi = _mm512_fmadd_pd(_mm512_cvtps_pd(_mm512_castps512_ps256(w3_hi_ps)),
+                                _mm512_cvtps_pd(_mm512_castps512_ps256(x3_hi_ps)),
+                                acc3_hi);
     }
-    int lane = 0;
-    for (; i + 16 <= end; i += 16, ++lane) {
+
+    int chunk = 0;
+    for (; i + 16 <= end; i += 16, ++chunk) {
       const __m512 w = decode_e4m3fn_16(_mm_loadu_si128(
           reinterpret_cast<const __m128i*>(weights + i)));
       const __m512 xv = _mm512_loadu_ps(x + i);
-      if ((lane & 3) == 0)
-        acc0 = _mm512_fmadd_ps(w, xv, acc0);
-      else if ((lane & 3) == 1)
-        acc1 = _mm512_fmadd_ps(w, xv, acc1);
-      else if ((lane & 3) == 2)
-        acc2 = _mm512_fmadd_ps(w, xv, acc2);
-      else
-        acc3 = _mm512_fmadd_ps(w, xv, acc3);
+      const __m512 w_hi_ps = _mm512_permutexvar_ps(high_lanes, w);
+      const __m512 x_hi_ps = _mm512_permutexvar_ps(high_lanes, xv);
+      const __m512d w_lo = _mm512_cvtps_pd(_mm512_castps512_ps256(w));
+      const __m512d x_lo = _mm512_cvtps_pd(_mm512_castps512_ps256(xv));
+      const __m512d w_hi = _mm512_cvtps_pd(_mm512_castps512_ps256(w_hi_ps));
+      const __m512d x_hi = _mm512_cvtps_pd(_mm512_castps512_ps256(x_hi_ps));
+      if ((chunk & 3) == 0) {
+        acc0_lo = _mm512_fmadd_pd(w_lo, x_lo, acc0_lo);
+        acc0_hi = _mm512_fmadd_pd(w_hi, x_hi, acc0_hi);
+      } else if ((chunk & 3) == 1) {
+        acc1_lo = _mm512_fmadd_pd(w_lo, x_lo, acc1_lo);
+        acc1_hi = _mm512_fmadd_pd(w_hi, x_hi, acc1_hi);
+      } else if ((chunk & 3) == 2) {
+        acc2_lo = _mm512_fmadd_pd(w_lo, x_lo, acc2_lo);
+        acc2_hi = _mm512_fmadd_pd(w_hi, x_hi, acc2_hi);
+      } else {
+        acc3_lo = _mm512_fmadd_pd(w_lo, x_lo, acc3_lo);
+        acc3_hi = _mm512_fmadd_pd(w_hi, x_hi, acc3_hi);
+      }
     }
+    const __m512d scale_exp = _mm512_set1_pd(
+        static_cast<double>(static_cast<int>(scales[block]) - 127));
+    const double block_sum =
+        _mm512_reduce_add_pd(_mm512_scalef_pd(acc0_lo, scale_exp)) +
+        _mm512_reduce_add_pd(_mm512_scalef_pd(acc0_hi, scale_exp)) +
+        _mm512_reduce_add_pd(_mm512_scalef_pd(acc1_lo, scale_exp)) +
+        _mm512_reduce_add_pd(_mm512_scalef_pd(acc1_hi, scale_exp)) +
+        _mm512_reduce_add_pd(_mm512_scalef_pd(acc2_lo, scale_exp)) +
+        _mm512_reduce_add_pd(_mm512_scalef_pd(acc2_hi, scale_exp)) +
+        _mm512_reduce_add_pd(_mm512_scalef_pd(acc3_lo, scale_exp)) +
+        _mm512_reduce_add_pd(_mm512_scalef_pd(acc3_hi, scale_exp));
+    total += block_sum;
 
-    // VSCALEFPS is an exponent adjustment. The shared ue8m0 scale is applied
-    // to four partial sums rather than multiplied into all 128 weights.
-    const __m512 scale_exp =
-        _mm512_set1_ps(static_cast<float>(static_cast<int>(scales[block]) - 127));
-    total0 = _mm512_add_ps(total0, _mm512_scalef_ps(acc0, scale_exp));
-    total1 = _mm512_add_ps(total1, _mm512_scalef_ps(acc1, scale_exp));
-    total2 = _mm512_add_ps(total2, _mm512_scalef_ps(acc2, scale_exp));
-    total3 = _mm512_add_ps(total3, _mm512_scalef_ps(acc3, scale_exp));
-
-    float tail = 0.0f;
-    for (; i < end; ++i) tail += e4m3fn_decode(weights[i]) * x[i];
-    scalar_tail +=
-        std::scalbn(tail, static_cast<int>(scales[block]) - 127);
+    double tail = 0.0;
+    for (; i < end; ++i) {
+      tail += static_cast<double>(e4m3fn_decode(weights[i])) *
+              static_cast<double>(x[i]);
+    }
+    total += std::scalbn(tail, static_cast<int>(scales[block]) - 127);
   }
-
-  const __m512 pair01 = _mm512_add_ps(total0, total1);
-  const __m512 pair23 = _mm512_add_ps(total2, total3);
-  return _mm512_reduce_add_ps(_mm512_add_ps(pair01, pair23)) + scalar_tail;
+  return static_cast<float>(total);
 }
 
 #endif  // FP8_MOE_X86
