@@ -1,9 +1,8 @@
-__pycache__/
-*.so
-*.o
 build/
 __pycache__/
-.venv/
-*.npy
 .pytest_cache/
+.venv/
+*.so
+*.o
 *.pyc
+*.npy

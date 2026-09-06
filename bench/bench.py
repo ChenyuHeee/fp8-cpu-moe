@@ -102,6 +102,9 @@ def main() -> int:
                         help="minimum weight matrix size")
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--iterations", type=int, default=11)
+    parser.add_argument("--random-data", action="store_true",
+                        help="fill weights and scales from the full finite e4m3 range "
+                             "instead of a constant, to confirm the rate is data-independent")
     args = parser.parse_args()
     if args.k <= 0 or args.working_set_mib <= 0 or args.warmup < 0 or args.iterations <= 0:
         parser.error("K, working-set size, and iterations must be positive")
@@ -124,8 +127,17 @@ def main() -> int:
     k_blocks = (args.k + 127) // 128
 
     weights = np.empty((rows, args.k), dtype=np.uint8)
-    weights.fill(0x38)  # finite e4m3 +1; values do not change the instruction path
-    scales = np.full((rows // 128, k_blocks), 127, dtype=np.uint8)
+    if args.random_data:
+        # Full finite e4m3 range. The SIMD path is branch-free over weight values,
+        # so this should measure the same as the constant fill -- --random-data
+        # exists to let a reader confirm that rather than take it on trust.
+        rng = np.random.default_rng(0)
+        codes = np.array([c for c in range(256) if c not in (0x7F, 0xFF)], dtype=np.uint8)
+        weights[:] = rng.choice(codes, size=weights.shape)
+        scales = rng.integers(120, 135, size=(rows // 128, k_blocks), dtype=np.uint8)
+    else:
+        weights.fill(0x38)  # finite e4m3 +1; values do not change the instruction path
+        scales = np.full((rows // 128, k_blocks), 127, dtype=np.uint8)
     x = np.linspace(0.25, 1.0, args.k, dtype=np.float32)
     output = np.full(rows, np.nan, dtype=np.float32)
     bytes_per_pass = weights.nbytes + scales.nbytes

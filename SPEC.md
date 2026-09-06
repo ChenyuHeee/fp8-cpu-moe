@@ -1,5 +1,27 @@
 # Block-FP8 CPU MoE Kernel — Specification
 
+> **Retrospective note.** Two assumptions below are wrong for FreeToken
+> integration, and both were written by reading the HF checkpoint's
+> `config.json` without checking what the runtime actually stores. They are
+> flagged inline rather than corrected, because the mistake is the useful part:
+>
+> 1. **Scales are not `ue8m0` bytes at the bank level.** The checkpoint says
+>    `scale_fmt: ue8m0`, but FreeToken converts them to **bf16** when it builds
+>    expert banks (`kernel/triton/fp8_blockscale_moe.py`, the `s_ptr` comment;
+>    `models/qwen3_5_moe/weight.py` bank spec). The "pure exponent add, no
+>    multiply" optimisation this spec is built around does not apply upstream.
+> 2. **Activations are bf16, not fp32.** `moe/cpu_executor.py` allocates its
+>    pinned activation buffer as `torch.bfloat16`, and every existing `dot_*`
+>    kernel takes `const bf16_t*`. This also changes the accuracy argument —
+>    see the fp64 discussion in `README.md`.
+>
+> A third divergence is deliberate here but wrong for upstream: this spec asks
+> for NaN propagation on codes `0x7F`/`0xFF`, whereas FreeToken decodes them to
+> ±480 as a documented, intentional deviation.
+>
+> See [FreeToken#399](https://github.com/FlashML-org/FreeToken/pull/399) for the
+> version written against the real conventions.
+
 ## Goal
 
 Write an AVX-512 CPU kernel that computes an **expert GEMV over block-FP8 weights**,
@@ -92,6 +114,9 @@ All three must pass. These are the definition of done.
    tail), 8192}, and weight values spanning the full e4m3 range including
    denormals, zeros, negatives, and the max normal 448. Include a test where a whole
    128-block is zero and one where scales differ sharply between adjacent blocks.
+
+   > *Erratum:* 5120 = 40×128 is exactly divisible, so it is not a ragged tail.
+   > The implementation uses K = 5137 instead, which actually is one.
 
 2. **Throughput.** ≥ **50.6 GB/s** single-socket on a working set that exceeds LLC
    (this is the 2.0× PCIe threshold that makes `hybrid` worthwhile). Report the number
